@@ -11,7 +11,7 @@ import io
 import base64
 import time
 
-CLOUD_URL = "http://185.216.21.60:5000"
+CLOUD_URL = "http://38.128.232.211:5000"
 MODEL_PATH = "/Users/mike/coding/python_3/my_projects/split-inference/models/mistral-7b-instruct"
 
 SPLIT_AFTER = 1   # Local: layers 0-1

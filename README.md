@@ -147,30 +147,53 @@ print(response)
 
 | File | Description |
 |------|-------------|
-| `interactive.py` | Interactive chat interface with KV-cache |
+| `mac_client.py` | **Recommended** - Lightweight Mac client that connects to RTX 3090 |
+| `interactive.py` | Interactive chat (Mac → Cloud direct) |
 | `local_client_kv.py` | Client library with KV-cache support |
 | `cloud_server_kv.py` | Cloud server with session-based KV-cache |
 | `local_client.py` | Original client (no KV-cache, slower) |
 | `cloud_server.py` | Original server (no KV-cache, slower) |
 
+### RTX 3090 Server (separate machine)
+Located at `/home/mike/D/coding/python_3/my_projects/split-inference-3090/`:
+| File | Description |
+|------|-------------|
+| `local_server.py` | 3090 server - handles tokenization, local layers, relays to cloud |
+
+## Architectures
+
+### Option 1: Mac → Cloud (direct)
+```
+Mac (layers 0-1, 30-31) ←→ Cloud A100 (layers 2-29)
+```
+Use `interactive.py` or `local_client_kv.py`
+
+### Option 2: Mac → RTX 3090 → Cloud (recommended)
+```
+Mac (text only) → RTX 3090 (layers 0-1, 30-31) ←→ Cloud A100 (layers 2-29)
+```
+Use `mac_client.py` - text never leaves your local network!
+
 ## Server Management
 
-### Start server
+### Cloud A100 Server
 ```bash
-ssh ubuntu@185.216.21.60
+ssh ubuntu@38.128.232.211
 source ~/split-inference/bin/activate
 nohup python ~/cloud_server_kv.py > ~/server.log 2>&1 &
 ```
 
-### Check health
+Check health: `curl http://38.128.232.211:5000/health`
+
+### RTX 3090 Local Server (192.168.1.32)
 ```bash
-curl http://185.216.21.60:5000/health
+ssh mike@192.168.1.32
+cd /home/mike/D/coding/python_3/my_projects/split-inference-3090
+source venv/bin/activate
+nohup python local_server.py > server.log 2>&1 &
 ```
 
-### View logs
-```bash
-ssh ubuntu@185.216.21.60 "tail -f ~/server.log"
-```
+Check health: `curl http://192.168.1.32:5001/health`
 
 ## Technical Details
 
