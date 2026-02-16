@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-Split Inference - Mac Client
+Split Inference - Mac Client (Streaming)
 Lightweight client that connects to RTX 3090 for privacy-preserving LLM inference.
 All processing happens on 3090 + cloud - Mac just sends/receives text.
+Tokens stream back in real-time as they're generated.
 """
 
 import requests
+import json
 import sys
 
 # RTX 3090 server on local network
@@ -21,14 +23,47 @@ def check_server():
             print(f"Connected to: {info['gpu']}")
             print(f"Local layers: {info['local_layers']}")
             print(f"Cloud relay: {info['cloud_url']}")
-            return True
+            streaming = info.get('streaming', False)
+            print(f"Streaming: {'enabled' if streaming else 'disabled'}")
+            return True, streaming
     except Exception as e:
         print(f"Cannot reach 3090 server: {e}")
-    return False
+    return False, False
 
 
-def generate(prompt: str, max_new_tokens: int = 100) -> dict:
-    """Send prompt to 3090 and get response."""
+def generate_stream(prompt: str, max_new_tokens: int = 500):
+    """Stream tokens from 3090 as they're generated."""
+    response = requests.post(
+        f"{SERVER_URL}/generate_stream",
+        json={
+            "prompt": prompt,
+            "max_new_tokens": max_new_tokens
+        },
+        stream=True,
+        timeout=120
+    )
+
+    if response.status_code != 200:
+        raise Exception(f"Server error: {response.text}")
+
+    stats = None
+    for line in response.iter_lines():
+        if line:
+            line = line.decode('utf-8')
+            if line.startswith('data: '):
+                data = json.loads(line[6:])
+                if 'token' in data:
+                    print(data['token'], end='', flush=True)
+                elif 'done' in data:
+                    stats = data
+                elif 'error' in data:
+                    raise Exception(data['error'])
+
+    return stats
+
+
+def generate(prompt: str, max_new_tokens: int = 500) -> dict:
+    """Send prompt to 3090 and get response (non-streaming fallback)."""
     response = requests.post(
         f"{SERVER_URL}/generate",
         json={
@@ -46,17 +81,18 @@ def generate(prompt: str, max_new_tokens: int = 100) -> dict:
 
 def main():
     print("=" * 60)
-    print("Split Inference - Mac Client")
+    print("Split Inference - Mac Client (Streaming)")
     print("Connected to RTX 3090 -> Cloud A100 -> RTX 3090")
     print("Your text never leaves the local network.")
     print("=" * 60)
 
-    if not check_server():
+    ok, streaming = check_server()
+    if not ok:
         print("\nMake sure the 3090 server is running:")
         print("  ssh mike@192.168.1.32")
         print("  cd /home/mike/D/coding/python_3/my_projects/split-inference-3090")
         print("  source venv/bin/activate")
-        print("  python local_server.py")
+        print("  python local_server_streaming.py")
         return
 
     print("\nType your prompts below. 'quit' to exit.\n")
@@ -70,10 +106,21 @@ def main():
                 print("Goodbye!")
                 break
 
-            print("Generating...", end="", flush=True)
-            result = generate(prompt)
-            print(f" done ({result['total_time_ms']:.0f}ms, {result['tokens_generated']} tokens, {result['tokens_per_second']:.1f} tok/s)")
-            print(f"\nAssistant: {result['response']}\n")
+            print("\nAssistant: ", end="", flush=True)
+
+            if streaming:
+                stats = generate_stream(prompt)
+                if stats:
+                    print(f"\n\n[{stats['tokens_generated']} tokens, {stats['total_time_ms']:.0f}ms, {stats['tokens_per_second']:.1f} tok/s]")
+                    if 'timing' in stats:
+                        t = stats['timing']
+                        print(f"  embed: {t['embed_avg_ms']:.1f}ms | early: {t['early_layers_avg_ms']:.1f}ms | cloud: {t['cloud_avg_ms']:.1f}ms | late: {t['late_layers_avg_ms']:.1f}ms | lm_head: {t['lm_head_avg_ms']:.1f}ms")
+                    print()
+            else:
+                print("(waiting...)", end="", flush=True)
+                result = generate(prompt)
+                print(f"\r{result['response']}")
+                print(f"\n[{result['tokens_generated']} tokens, {result['total_time_ms']:.0f}ms, {result['tokens_per_second']:.1f} tok/s]\n")
 
         except KeyboardInterrupt:
             print("\nGoodbye!")
