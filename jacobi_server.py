@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """
-Split Inference - RTX 3090 Jacobi Parallel Decoding Server
+Split Inference - Local Decoding Server
 
-Instead of generating 1 token per network round-trip, Jacobi decoding
-processes blocks of k tokens in parallel. Each block iterates until
-predictions converge (fixed point), then commits to KV cache.
-
-For 100 tokens: ~10 iterations instead of 100 round-trips → 3-5x speedup.
+Supports sequential, Jacobi parallel, and lookahead (n-gram speculation)
+decoding modes. Model-agnostic: works with any HuggingFace causal LM
+(tested with Mistral 7B and LLaMA 2 13B).
 
 Modes:
-  CLOUD_URL = None  → All 32 layers run locally on 3090 (for testing)
-  CLOUD_URL = "..." → Layers 0-1 + 30-31 local, 2-29 on cloud A100
+  --cloud None  → All layers run locally (for testing/baseline)
+  --cloud URL   → Early/late layers local, middle layers on cloud GPU
+                  Layer split configured via --split-after / --resume-at
 """
 
 import torch
@@ -87,7 +86,7 @@ class JacobiMetrics:
 
 
 class JacobiDecoder:
-    """Jacobi parallel decoding engine for Mistral 7B."""
+    """Jacobi parallel decoding engine for split inference."""
 
     def __init__(self, model, tokenizer, device, cloud_url=None,
                  block_size=16, max_iters=32):
@@ -104,6 +103,7 @@ class JacobiDecoder:
         self._cloud_crop_to = None
         self._cloud_attn_mask = None   # Custom mask tensor (for speculation)
         self._cloud_relocate = None    # {"src": int, "dst": int, "len": int}
+        self._step_timings = []        # Per-cloud-call timing decomposition
 
     def _relocate_local_cache(self, cache, src, dst, length):
         """Copy KV cache entries from src to dst positions, then crop."""
@@ -133,7 +133,7 @@ class JacobiDecoder:
         return mask
 
     def generate_stream(self, prompt: str, max_new_tokens: int = 500,
-                        block_size: int = None):
+                        block_size: int = None, return_logits: bool = False):
         """Generator that yields token dicts as blocks converge.
 
         Key insight: In a transformer, output at position i predicts token i+1.
@@ -249,6 +249,11 @@ class JacobiDecoder:
                 )
                 next_last_logits = final_logits[:, -1, :]
 
+            # Save logits for return_logits mode (before last_logits gets updated)
+            if return_logits:
+                _emit_first_logits = last_logits[0].cpu()
+                _emit_source = block_logits if block_converged else final_logits
+
             # Check for EOS in the final block (only after convergence/commit)
             eos_mask = (block_ids == self.tokenizer.eos_token_id) if not block_converged else \
                        (new_block_ids == self.tokenizer.eos_token_id)
@@ -277,7 +282,13 @@ class JacobiDecoder:
                 full_text = self.tokenizer.decode(all_generated_ids)
                 new_text = full_text[len(prev_text):]
                 prev_text = full_text
-                yield {"token": new_text, "token_id": tid}
+                event = {"token": new_text, "token_id": tid}
+                if return_logits:
+                    if j == 0:
+                        event["logits"] = _emit_first_logits
+                    else:
+                        event["logits"] = _emit_source[0, j - 1].cpu()
+                yield event
                 metrics.generated_tokens += 1
 
             metrics.blocks_completed += 1
@@ -302,7 +313,8 @@ class JacobiDecoder:
         yield {"done": True, **metrics.summary()}
 
     def generate_stream_lookahead(self, prompt: str, max_new_tokens: int = 500,
-                                   ngram_size: int = 5, max_candidates: int = 5):
+                                   ngram_size: int = 5, max_candidates: int = 5,
+                                   return_logits: bool = False):
         """Generate with n-gram speculation for multi-token acceptance.
 
         Maintains an n-gram pool (seeded from prompt, grown from output).
@@ -488,9 +500,17 @@ class JacobiDecoder:
                     cache.crop(committed_len + accepted_count)
                     last_logits = logits[:, best_last_logits_row:best_last_logits_row + 1, :]
 
+                    # Build per-token logits for return_logits mode
+                    if return_logits:
+                        best_offset = 1 + sum(len(candidates[ci]) for ci in range(best_cand_idx))
+                        _emit_logits = [last_logits.squeeze().cpu()]  # first_token_id [vocab]
+                        _emit_logits.append(logits[0, 0].cpu())  # cand[0]
+                        for ej in range(1, best_hit):
+                            _emit_logits.append(logits[0, best_offset + ej - 1].cpu())
+
                     # Emit tokens
                     emit_ids = [first_token_id] + list(candidates[best_cand_idx][:best_hit])
-                    for tid in emit_ids:
+                    for ei, tid in enumerate(emit_ids):
                         if tid == self.tokenizer.eos_token_id:
                             tokens_remaining = 0
                             break
@@ -498,7 +518,10 @@ class JacobiDecoder:
                         full_text = self.tokenizer.decode(all_generated_ids)
                         new_text = full_text[len(prev_text):]
                         prev_text = full_text
-                        yield {"token": new_text, "token_id": tid}
+                        event = {"token": new_text, "token_id": tid}
+                        if return_logits:
+                            event["logits"] = _emit_logits[ei]
+                        yield event
                         metrics.generated_tokens += 1
 
                     committed_len += accepted_count
@@ -517,13 +540,17 @@ class JacobiDecoder:
                 else:
                     # No match, accept just first_token
                     cache.crop(committed_len + 1)
+                    _no_match_logits = last_logits.squeeze().cpu() if return_logits else None
                     last_logits = logits[:, 0:1, :]
 
                     all_generated_ids.append(first_token_id)
                     full_text = self.tokenizer.decode(all_generated_ids)
                     new_text = full_text[len(prev_text):]
                     prev_text = full_text
-                    yield {"token": new_text, "token_id": first_token_id}
+                    event = {"token": new_text, "token_id": first_token_id}
+                    if return_logits:
+                        event["logits"] = _no_match_logits
+                    yield event
                     metrics.generated_tokens += 1
 
                     committed_len += 1
@@ -561,13 +588,17 @@ class JacobiDecoder:
                     logits = self.model.lm_head(hidden)
 
                 metrics.forward_times_ms.append((time.time() - fwd_start) * 1000)
+                _no_cand_logits = last_logits.squeeze().cpu() if return_logits else None
                 last_logits = logits[:, -1:, :]
 
                 all_generated_ids.append(first_token_id)
                 full_text = self.tokenizer.decode(all_generated_ids)
                 new_text = full_text[len(prev_text):]
                 prev_text = full_text
-                yield {"token": new_text, "token_id": first_token_id}
+                event = {"token": new_text, "token_id": first_token_id}
+                if return_logits:
+                    event["logits"] = _no_cand_logits
+                yield event
                 metrics.generated_tokens += 1
 
                 committed_len += 1
@@ -684,7 +715,7 @@ class JacobiDecoder:
 
     def _forward_all_layers(self, hidden, position_embeddings, cache,
                             cache_position, position_ids, attn_mask=None):
-        """All 32 layers on local GPU (local-only mode)."""
+        """All layers on local GPU (local-only mode)."""
         for idx in range(NUM_LAYERS):
             out = self.model.model.layers[idx](
                 hidden,
@@ -702,7 +733,7 @@ class JacobiDecoder:
 
     def _forward_split_layers(self, hidden, position_embeddings, cache,
                               cache_position, position_ids, attn_mask=None):
-        """Split mode: layers 0-1 local, 2-29 cloud, 30-31 local."""
+        """Split mode: early layers local, middle cloud, late layers local."""
         # Early layers (0-1)
         for idx in range(SPLIT_AFTER + 1):
             out = self.model.model.layers[idx](
@@ -843,6 +874,17 @@ class JacobiDecoder:
               f"total={1000*(t4-t0):.0f}ms "
               f"seq_len={hidden.shape[1]}")
 
+        self._step_timings.append({
+            "serialize_ms": round((t1 - t0) * 1000, 2),
+            "send_ms": round((t2 - t1) * 1000, 2),
+            "recv_ms": round((t3 - t2) * 1000, 2),
+            "deserialize_ms": round((t4 - t3) * 1000, 2),
+            "total_ms": round((t4 - t0) * 1000, 2),
+            "cloud_gpu_ms": cloud_ms,
+            "network_rtt_ms": round((t3 - t1) * 1000 - cloud_ms, 2),
+            "seq_len": hidden.shape[1],
+        })
+
         return out
 
 
@@ -853,21 +895,52 @@ decoder = None
 DECODE_MODE = "sequential"  # "sequential", "jacobi", or "lookahead"
 
 
-def load_model(model_path, device):
-    global decoder
-    print(f"Loading Mistral 7B from {model_path}...")
+def load_model(model_path, device, split_after=None, resume_at=None):
+    global decoder, NUM_LAYERS, SPLIT_AFTER, RESUME_AT
+    print(f"Loading model from {model_path}...")
     tokenizer = AutoTokenizer.from_pretrained(model_path)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_path,
-        dtype=torch.float16,
-        device_map=device,
-    )
-    model.eval()
 
-    mem_gb = torch.cuda.memory_allocated() / 1e9
-    print(f"Loaded on {torch.cuda.get_device_name(0)}, "
-          f"VRAM: {mem_gb:.1f}GB, "
-          f"mode: {'split (cloud)' if CLOUD_URL else 'local-only (all 32 layers)'}")
+    if CLOUD_URL:
+        # Split mode: load to CPU first, then move only local layers to GPU
+        # This allows models larger than GPU VRAM (e.g., 13B on 24GB 3090)
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path, dtype=torch.float16, device_map="cpu",
+        )
+        model.eval()
+
+        NUM_LAYERS = len(model.model.layers)
+        SPLIT_AFTER = split_after if split_after is not None else 1
+        RESUME_AT = resume_at if resume_at is not None else NUM_LAYERS - 2
+
+        # Move only local layers + embeddings + head to GPU
+        model.model.embed_tokens = model.model.embed_tokens.to(device)
+        model.model.rotary_emb = model.model.rotary_emb.to(device)
+        for i in range(SPLIT_AFTER + 1):
+            model.model.layers[i] = model.model.layers[i].to(device)
+        for i in range(RESUME_AT, NUM_LAYERS):
+            model.model.layers[i] = model.model.layers[i].to(device)
+        model.model.norm = model.model.norm.to(device)
+        model.lm_head = model.lm_head.to(device)
+
+        mem_gb = torch.cuda.memory_allocated() / 1e9
+        print(f"Split mode: {NUM_LAYERS} layers total, "
+              f"local 0-{SPLIT_AFTER} + {RESUME_AT}-{NUM_LAYERS-1} on {torch.cuda.get_device_name(0)}, "
+              f"cloud {SPLIT_AFTER+1}-{RESUME_AT-1}, "
+              f"VRAM: {mem_gb:.1f}GB")
+    else:
+        # Local-only mode: load everything to GPU
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path, dtype=torch.float16, device_map=device,
+        )
+        model.eval()
+
+        NUM_LAYERS = len(model.model.layers)
+        SPLIT_AFTER = split_after if split_after is not None else 1
+        RESUME_AT = resume_at if resume_at is not None else NUM_LAYERS - 2
+
+        mem_gb = torch.cuda.memory_allocated() / 1e9
+        print(f"Local-only: {NUM_LAYERS} layers on {torch.cuda.get_device_name(0)}, "
+              f"VRAM: {mem_gb:.1f}GB")
 
     decoder = JacobiDecoder(model, tokenizer, device, cloud_url=CLOUD_URL,
                             block_size=BLOCK_SIZE, max_iters=MAX_JACOBI_ITERS)
@@ -875,12 +948,13 @@ def load_model(model_path, device):
 
 @app.route('/health', methods=['GET'])
 def health():
-    mode = "local-only (all 32 layers)" if CLOUD_URL is None else f"split (cloud: {CLOUD_URL})"
+    mode = f"local-only (all {NUM_LAYERS} layers)" if CLOUD_URL is None else f"split (cloud: {CLOUD_URL})"
     return jsonify({
         "status": "ok",
         "gpu": torch.cuda.get_device_name(0),
         "memory_used_gb": round(torch.cuda.memory_allocated() / 1e9, 2),
-        "local_layers": "0-31" if CLOUD_URL is None else f"0-{SPLIT_AFTER}, {RESUME_AT}-31",
+        "num_layers": NUM_LAYERS,
+        "local_layers": f"0-{NUM_LAYERS-1}" if CLOUD_URL is None else f"0-{SPLIT_AFTER}, {RESUME_AT}-{NUM_LAYERS-1}",
         "cloud_url": CLOUD_URL or "disabled",
         "streaming": True,
         "jacobi": True,
@@ -938,13 +1012,17 @@ def generate():
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Jacobi Parallel Decoding Server')
-    parser.add_argument('--model', default=MODEL_PATH, help='Path to Mistral 7B model')
+    parser.add_argument('--model', default=MODEL_PATH, help='Path to model (e.g., Mistral 7B, LLaMA 2 13B)')
     parser.add_argument('--port', type=int, default=5001, help='Server port')
     parser.add_argument('--cloud', default=None, help='Cloud server URL for split mode')
     parser.add_argument('--block-size', type=int, default=BLOCK_SIZE, help='Jacobi block size k')
     parser.add_argument('--max-iters', type=int, default=MAX_JACOBI_ITERS, help='Max Jacobi iterations per block')
     parser.add_argument('--mode', default='sequential', choices=['sequential', 'jacobi', 'lookahead'],
                         help='Decoding mode: sequential (block_size=1), jacobi, or lookahead (n-gram speculation)')
+    parser.add_argument('--split-after', type=int, default=None,
+                        help='Last local layer before cloud (default: 1)')
+    parser.add_argument('--resume-at', type=int, default=None,
+                        help='First local layer after cloud (default: num_layers - 2)')
     args = parser.parse_args()
 
     MODEL_PATH = args.model
@@ -953,7 +1031,7 @@ if __name__ == '__main__':
     MAX_JACOBI_ITERS = args.max_iters
     DECODE_MODE = args.mode
 
-    load_model(MODEL_PATH, DEVICE)
+    load_model(MODEL_PATH, DEVICE, split_after=args.split_after, resume_at=args.resume_at)
     print(f"\nStarting server on port {args.port}...")
     print(f"  Mode: {DECODE_MODE}, Block size: {BLOCK_SIZE}")
     app.run(host='0.0.0.0', port=args.port, threaded=True)

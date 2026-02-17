@@ -104,7 +104,7 @@ def run_sequential_test(decoder, prompt):
         "tok_per_sec": 0,
     }
 
-    for event in decoder.generate_stream(prompt, max_new_tokens=MAX_NEW_TOKENS):
+    for event in decoder.generate_stream(prompt, max_new_tokens=MAX_NEW_TOKENS, block_size=1):
         if "done" in event:
             results["tokens_generated"] = event.get("tokens_generated", 0)
             results["time_ms"] = event.get("total_time_ms", 0)
@@ -120,6 +120,8 @@ def main():
     parser.add_argument("--model", default=MODEL_PATH)
     parser.add_argument("--cloud", default=None, help="Cloud URL for split mode")
     parser.add_argument("--max-tokens", type=int, default=MAX_NEW_TOKENS)
+    parser.add_argument("--split-after", type=int, default=1, help="Last local layer before cloud")
+    parser.add_argument("--resume-at", type=int, default=None, help="First local layer after cloud")
     parser.add_argument("--output", default="/home/mike/D/coding/python_3/my_projects/split-inference-3090/experiment_data/lookahead_ablation.json")
     args = parser.parse_args()
 
@@ -127,15 +129,45 @@ def main():
 
     # Import JacobiDecoder
     # We need to set up the module path
-    from jacobi_server import JacobiDecoder, SPLIT_AFTER, RESUME_AT, NUM_LAYERS, BLOCK_SIZE, MAX_JACOBI_ITERS
+    from jacobi_server import JacobiDecoder, BLOCK_SIZE, MAX_JACOBI_ITERS
+    import jacobi_server
 
     print("Loading model...")
     tokenizer = AutoTokenizer.from_pretrained(args.model)
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model, dtype=torch.float16, device_map=DEVICE
-    )
-    model.eval()
-    print(f"Model loaded. Mode: {'split (cloud)' if args.cloud else 'local-only'}")
+
+    if args.cloud:
+        # Split mode: load to CPU, move only local layers to GPU
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model, dtype=torch.float16, device_map="cpu"
+        )
+        model.eval()
+        num_layers = len(model.model.layers)
+        split_after = args.split_after
+        resume_at = args.resume_at if args.resume_at is not None else num_layers - 2
+
+        model.model.embed_tokens = model.model.embed_tokens.to(DEVICE)
+        model.model.rotary_emb = model.model.rotary_emb.to(DEVICE)
+        for i in range(split_after + 1):
+            model.model.layers[i] = model.model.layers[i].to(DEVICE)
+        for i in range(resume_at, num_layers):
+            model.model.layers[i] = model.model.layers[i].to(DEVICE)
+        model.model.norm = model.model.norm.to(DEVICE)
+        model.lm_head = model.lm_head.to(DEVICE)
+
+        # Update module-level constants used by JacobiDecoder
+        jacobi_server.NUM_LAYERS = num_layers
+        jacobi_server.SPLIT_AFTER = split_after
+        jacobi_server.RESUME_AT = resume_at
+
+        mem_gb = torch.cuda.memory_allocated() / 1e9
+        print(f"Split mode: {num_layers} layers, local 0-{split_after} + {resume_at}-{num_layers-1}, "
+              f"VRAM: {mem_gb:.1f}GB")
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model, dtype=torch.float16, device_map=DEVICE
+        )
+        model.eval()
+        print(f"Local-only mode loaded.")
 
     decoder = JacobiDecoder(
         model, tokenizer, DEVICE, cloud_url=args.cloud,

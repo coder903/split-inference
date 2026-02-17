@@ -1,0 +1,309 @@
+{
+  "config": {
+    "model": "/home/mike/D/models/mistral-7b-instruct",
+    "cloud_url": "http://localhost:5000",
+    "max_new_tokens": 100,
+    "target_rtts_ms": [
+      20,
+      40,
+      60,
+      80,
+      100,
+      120,
+      150,
+      200
+    ]
+  },
+  "runs": [
+    {
+      "mode": "sequential",
+      "tokens_generated": 100,
+      "measured_tok_s": 8.1,
+      "num_steps": 100,
+      "acceptance_rate": 1,
+      "timing_decomposition": {
+        "per_step_wall_ms": 123.8,
+        "network_rtt_mean_ms": 78.0,
+        "network_rtt_median_ms": 69.1,
+        "network_rtt_min_ms": 64.8,
+        "network_rtt_max_ms": 461.0,
+        "cloud_compute_mean_ms": 15.8,
+        "local_compute_ms": 29.4,
+        "serialize_overhead_ms": 0.7,
+        "fixed_overhead_ms": 45.9
+      },
+      "num_cloud_calls": 100,
+      "category": "code",
+      "prompt_preview": "Write a Python function to implement binary search on a sort..."
+    },
+    {
+      "mode": "lookahead",
+      "tokens_generated": 100,
+      "measured_tok_s": 10.1,
+      "num_steps": 74,
+      "acceptance_rate": 1.351,
+      "timing_decomposition": {
+        "per_step_wall_ms": 134.0,
+        "network_rtt_mean_ms": 92.5,
+        "network_rtt_median_ms": 69.9,
+        "network_rtt_min_ms": 65.4,
+        "network_rtt_max_ms": 231.2,
+        "cloud_compute_mean_ms": 15.4,
+        "local_compute_ms": 25.3,
+        "serialize_overhead_ms": 0.8,
+        "fixed_overhead_ms": 41.4
+      },
+      "num_cloud_calls": 74,
+      "category": "code",
+      "prompt_preview": "Write a Python function to implement binary search on a sort..."
+    },
+    {
+      "mode": "sequential",
+      "tokens_generated": 100,
+      "measured_tok_s": 8.6,
+      "num_steps": 100,
+      "acceptance_rate": 1,
+      "timing_decomposition": {
+        "per_step_wall_ms": 116.2,
+        "network_rtt_mean_ms": 74.8,
+        "network_rtt_median_ms": 68.6,
+        "network_rtt_min_ms": 64.5,
+        "network_rtt_max_ms": 129.9,
+        "cloud_compute_mean_ms": 15.8,
+        "local_compute_ms": 24.9,
+        "serialize_overhead_ms": 0.7,
+        "fixed_overhead_ms": 41.4
+      },
+      "num_cloud_calls": 100,
+      "category": "structured",
+      "prompt_preview": "List the top 10 largest countries by area with their capital..."
+    },
+    {
+      "mode": "lookahead",
+      "tokens_generated": 100,
+      "measured_tok_s": 9.0,
+      "num_steps": 80,
+      "acceptance_rate": 1.25,
+      "timing_decomposition": {
+        "per_step_wall_ms": 139.2,
+        "network_rtt_mean_ms": 98.3,
+        "network_rtt_median_ms": 75.2,
+        "network_rtt_min_ms": 64.2,
+        "network_rtt_max_ms": 234.5,
+        "cloud_compute_mean_ms": 15.5,
+        "local_compute_ms": 24.6,
+        "serialize_overhead_ms": 0.8,
+        "fixed_overhead_ms": 40.9
+      },
+      "num_cloud_calls": 80,
+      "category": "structured",
+      "prompt_preview": "List the top 10 largest countries by area with their capital..."
+    },
+    {
+      "mode": "sequential",
+      "tokens_generated": 100,
+      "measured_tok_s": 8.3,
+      "num_steps": 100,
+      "acceptance_rate": 1,
+      "timing_decomposition": {
+        "per_step_wall_ms": 120.7,
+        "network_rtt_mean_ms": 78.3,
+        "network_rtt_median_ms": 69.1,
+        "network_rtt_min_ms": 65.1,
+        "network_rtt_max_ms": 368.3,
+        "cloud_compute_mean_ms": 16.2,
+        "local_compute_ms": 25.4,
+        "serialize_overhead_ms": 0.7,
+        "fixed_overhead_ms": 42.4
+      },
+      "num_cloud_calls": 100,
+      "category": "creative",
+      "prompt_preview": "Write a short story about a robot that discovers it can drea..."
+    },
+    {
+      "mode": "lookahead",
+      "tokens_generated": 100,
+      "measured_tok_s": 8.1,
+      "num_steps": 98,
+      "acceptance_rate": 1.02,
+      "timing_decomposition": {
+        "per_step_wall_ms": 126.6,
+        "network_rtt_mean_ms": 88.7,
+        "network_rtt_median_ms": 68.9,
+        "network_rtt_min_ms": 64.6,
+        "network_rtt_max_ms": 224.6,
+        "cloud_compute_mean_ms": 15.0,
+        "local_compute_ms": 22.2,
+        "serialize_overhead_ms": 0.8,
+        "fixed_overhead_ms": 37.9
+      },
+      "num_cloud_calls": 98,
+      "category": "creative",
+      "prompt_preview": "Write a short story about a robot that discovers it can drea..."
+    },
+    {
+      "mode": "sequential",
+      "tokens_generated": 100,
+      "measured_tok_s": 8.3,
+      "num_steps": 100,
+      "acceptance_rate": 1,
+      "timing_decomposition": {
+        "per_step_wall_ms": 120.3,
+        "network_rtt_mean_ms": 78.5,
+        "network_rtt_median_ms": 69.0,
+        "network_rtt_min_ms": 64.9,
+        "network_rtt_max_ms": 428.4,
+        "cloud_compute_mean_ms": 15.8,
+        "local_compute_ms": 25.3,
+        "serialize_overhead_ms": 0.7,
+        "fixed_overhead_ms": 41.8
+      },
+      "num_cloud_calls": 100,
+      "category": "conversational",
+      "prompt_preview": "What are the main differences between Python and Rust? When ..."
+    },
+    {
+      "mode": "lookahead",
+      "tokens_generated": 100,
+      "measured_tok_s": 8.0,
+      "num_steps": 93,
+      "acceptance_rate": 1.075,
+      "timing_decomposition": {
+        "per_step_wall_ms": 134.9,
+        "network_rtt_mean_ms": 96.1,
+        "network_rtt_median_ms": 70.7,
+        "network_rtt_min_ms": 64.6,
+        "network_rtt_max_ms": 227.8,
+        "cloud_compute_mean_ms": 15.2,
+        "local_compute_ms": 22.7,
+        "serialize_overhead_ms": 0.8,
+        "fixed_overhead_ms": 38.7
+      },
+      "num_cloud_calls": 93,
+      "category": "conversational",
+      "prompt_preview": "What are the main differences between Python and Rust? When ..."
+    }
+  ],
+  "projections": {
+    "code_sequential": {
+      "20ms": 15.2,
+      "40ms": 11.6,
+      "60ms": 9.4,
+      "80ms": 7.9,
+      "100ms": 6.9,
+      "120ms": 6.0,
+      "150ms": 5.1,
+      "200ms": 4.1
+    },
+    "code_lookahead": {
+      "20ms": 22.0,
+      "40ms": 16.6,
+      "60ms": 13.3,
+      "80ms": 11.1,
+      "100ms": 9.6,
+      "120ms": 8.4,
+      "150ms": 7.1,
+      "200ms": 5.6
+    },
+    "structured_sequential": {
+      "20ms": 16.3,
+      "40ms": 12.3,
+      "60ms": 9.9,
+      "80ms": 8.2,
+      "100ms": 7.1,
+      "120ms": 6.2,
+      "150ms": 5.2,
+      "200ms": 4.1
+    },
+    "structured_lookahead": {
+      "20ms": 20.5,
+      "40ms": 15.5,
+      "60ms": 12.4,
+      "80ms": 10.3,
+      "100ms": 8.9,
+      "120ms": 7.8,
+      "150ms": 6.5,
+      "200ms": 5.2
+    },
+    "creative_sequential": {
+      "20ms": 16.0,
+      "40ms": 12.1,
+      "60ms": 9.8,
+      "80ms": 8.2,
+      "100ms": 7.0,
+      "120ms": 6.2,
+      "150ms": 5.2,
+      "200ms": 4.1
+    },
+    "creative_lookahead": {
+      "20ms": 17.6,
+      "40ms": 13.1,
+      "60ms": 10.4,
+      "80ms": 8.7,
+      "100ms": 7.4,
+      "120ms": 6.5,
+      "150ms": 5.4,
+      "200ms": 4.3
+    },
+    "conversational_sequential": {
+      "20ms": 16.2,
+      "40ms": 12.2,
+      "60ms": 9.8,
+      "80ms": 8.2,
+      "100ms": 7.1,
+      "120ms": 6.2,
+      "150ms": 5.2,
+      "200ms": 4.1
+    },
+    "conversational_lookahead": {
+      "20ms": 18.3,
+      "40ms": 13.7,
+      "60ms": 10.9,
+      "80ms": 9.1,
+      "100ms": 7.8,
+      "120ms": 6.8,
+      "150ms": 5.7,
+      "200ms": 4.5
+    }
+  },
+  "summary": {
+    "sequential": {
+      "avg_per_step_wall_ms": 120.2,
+      "avg_measured_rtt_ms": 77.4,
+      "avg_cloud_compute_ms": 15.9,
+      "avg_local_compute_ms": 26.2,
+      "avg_fixed_overhead_ms": 42.9,
+      "avg_acceptance_rate": 1,
+      "avg_measured_tok_s": 8.3,
+      "projected_tok_s": {
+        "20ms": 15.9,
+        "40ms": 12.1,
+        "60ms": 9.7,
+        "80ms": 8.1,
+        "100ms": 7.0,
+        "120ms": 6.1,
+        "150ms": 5.2,
+        "200ms": 4.1
+      }
+    },
+    "lookahead": {
+      "avg_per_step_wall_ms": 133.7,
+      "avg_measured_rtt_ms": 93.9,
+      "avg_cloud_compute_ms": 15.3,
+      "avg_local_compute_ms": 23.7,
+      "avg_fixed_overhead_ms": 39.7,
+      "avg_acceptance_rate": 1.174,
+      "avg_measured_tok_s": 8.8,
+      "projected_tok_s": {
+        "20ms": 19.7,
+        "40ms": 14.7,
+        "60ms": 11.8,
+        "80ms": 9.8,
+        "100ms": 8.4,
+        "120ms": 7.4,
+        "150ms": 6.2,
+        "200ms": 4.9
+      }
+    }
+  }
+}

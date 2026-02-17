@@ -1,11 +1,15 @@
 """
 Split Inference - Cloud Server with KV Cache
 Maintains session-based KV cache for fast token generation.
-Supports both sequential and Jacobi parallel decoding.
+Model-agnostic: works with any HuggingFace causal LM.
 
 Transport:
-  - WebSocket on port 5001 (primary, low-latency binary protocol)
-  - HTTP/Flask on port 5000 (health checks, backward compat)
+  - WebSocket (primary, low-latency binary protocol)
+  - HTTP/Flask (health checks, backward compat)
+
+Usage:
+  python cloud_server_kv.py --model ~/models/mistral-7b-instruct
+  python cloud_server_kv.py --model ~/models/llama-2-13b-chat --cloud-start 2 --cloud-end 37
 """
 
 import torch
@@ -34,16 +38,20 @@ sessions = {}
 SESSION_TIMEOUT = 300  # 5 minutes
 
 
-def load_model():
-    global model
-    print("Loading Mistral 7B...")
+def load_model(model_path, cloud_start=None, cloud_end=None):
+    global model, CLOUD_START, CLOUD_END
+    print(f"Loading model from {model_path}...")
     model = AutoModelForCausalLM.from_pretrained(
-        "/home/ubuntu/models/mistral-7b-instruct",
+        model_path,
         dtype=torch.float16,
         device_map="cuda"
     )
     model.eval()
-    print(f"Loaded. Layers {CLOUD_START}-{CLOUD_END}, GPU mem: {torch.cuda.memory_allocated()/1e9:.1f}GB")
+    num_layers = len(model.model.layers)
+    CLOUD_START = cloud_start if cloud_start is not None else 2
+    CLOUD_END = cloud_end if cloud_end is not None else num_layers - 3
+    print(f"Loaded. {num_layers} layers total, serving {CLOUD_START}-{CLOUD_END}, "
+          f"GPU mem: {torch.cuda.memory_allocated()/1e9:.1f}GB")
 
 
 def cleanup_old_sessions():
@@ -244,14 +252,14 @@ async def ws_handler(websocket):
         print(f"[WS] Session {session_id[:8]} ended")
 
 
-async def start_ws_server():
+async def start_ws_server(port=5001):
     async with websockets.serve(
-        ws_handler, "0.0.0.0", 5001,
+        ws_handler, "0.0.0.0", port,
         max_size=20 * 1024 * 1024,  # 20MB max message
         ping_interval=30,
         ping_timeout=60,
     ):
-        print("WebSocket server running on port 5001")
+        print(f"WebSocket server running on port {port}")
         await asyncio.Future()  # run forever
 
 
@@ -357,15 +365,29 @@ def end_session():
 
 
 if __name__ == '__main__':
-    load_model()
+    import argparse
+    parser = argparse.ArgumentParser(description='Split Inference Cloud Server')
+    parser.add_argument('--model', default="/home/ubuntu/models/mistral-7b-instruct",
+                        help='Path to model')
+    parser.add_argument('--cloud-start', type=int, default=None,
+                        help='First cloud layer (default: 2)')
+    parser.add_argument('--cloud-end', type=int, default=None,
+                        help='Last cloud layer (default: num_layers - 3)')
+    parser.add_argument('--http-port', type=int, default=5000,
+                        help='HTTP health check port')
+    parser.add_argument('--ws-port', type=int, default=5001,
+                        help='WebSocket port')
+    args = parser.parse_args()
+
+    load_model(args.model, cloud_start=args.cloud_start, cloud_end=args.cloud_end)
 
     # Start WebSocket server in background thread
     def run_ws():
-        asyncio.run(start_ws_server())
+        asyncio.run(start_ws_server(port=args.ws_port))
 
     ws_thread = threading.Thread(target=run_ws, daemon=True)
     ws_thread.start()
 
     # Start Flask HTTP server (main thread)
-    print("Starting HTTP health server on port 5000...")
-    app.run(host='0.0.0.0', port=5000, threaded=True)
+    print(f"Starting HTTP health server on port {args.http_port}...")
+    app.run(host='0.0.0.0', port=args.http_port, threaded=True)
