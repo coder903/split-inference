@@ -1,16 +1,27 @@
 """
 Split Inference - Cloud Server with KV Cache
-Maintains session-based KV cache for fast token generation
+Maintains session-based KV cache for fast token generation.
+Supports both sequential and Jacobi parallel decoding.
+
+Transport:
+  - WebSocket on port 5001 (primary, low-latency binary protocol)
+  - HTTP/Flask on port 5000 (health checks, backward compat)
 """
 
 import torch
+import numpy as np
 from flask import Flask, request, jsonify
 from transformers import AutoModelForCausalLM
 from transformers.cache_utils import DynamicCache
-import io
+import asyncio
+import websockets
+import struct
+import json
 import base64
 import time
 import uuid
+import threading
+import traceback
 
 app = Flask(__name__)
 model = None
@@ -28,7 +39,7 @@ def load_model():
     print("Loading Mistral 7B...")
     model = AutoModelForCausalLM.from_pretrained(
         "/home/ubuntu/models/mistral-7b-instruct",
-        torch_dtype=torch.float16,
+        dtype=torch.float16,
         device_map="cuda"
     )
     model.eval()
@@ -45,6 +56,207 @@ def cleanup_old_sessions():
         print(f"Cleaned up {len(expired)} expired sessions")
 
 
+def process_tensors(session, hidden, position_embeddings, seq_len, is_prompt,
+                    crop_to, relocate=None, custom_mask=None):
+    """Core processing logic shared by HTTP and WebSocket handlers."""
+    # Handle cache management
+    if is_prompt:
+        session['cache'] = DynamicCache()
+        cache_position = torch.arange(seq_len, device='cuda')
+        session['seq_len'] = seq_len
+    else:
+        # Relocate KV entries before cropping (for n-gram speculation)
+        if relocate is not None and session['cache'] is not None:
+            src, dst, length = relocate['src'], relocate['dst'], relocate['len']
+            for layer in session['cache'].layers:
+                if layer.keys is None:
+                    continue
+                layer.keys[:, :, dst:dst+length, :] = \
+                    layer.keys[:, :, src:src+length, :].clone()
+                layer.values[:, :, dst:dst+length, :] = \
+                    layer.values[:, :, src:src+length, :].clone()
+
+        if crop_to is not None and session['cache'] is not None:
+            session['cache'].crop(crop_to)
+            session['seq_len'] = crop_to
+        cache_position = torch.arange(
+            session['seq_len'], session['seq_len'] + seq_len, device='cuda'
+        )
+        session['seq_len'] += seq_len
+
+    position_ids = cache_position.unsqueeze(0)
+
+    # Use custom mask if provided, otherwise build default causal mask
+    if custom_mask is not None:
+        attn_mask = custom_mask
+    else:
+        attn_mask = None
+        if not is_prompt and seq_len > 1 and session['seq_len'] - seq_len > 0:
+            committed_len = session['seq_len'] - seq_len
+            kv_len = session['seq_len']
+            attn_mask = torch.full(
+                (1, 1, seq_len, kv_len), float('-inf'),
+                device='cuda', dtype=torch.float16
+            )
+            for i in range(seq_len):
+                attn_mask[0, 0, i, :committed_len + i + 1] = 0.0
+
+    # Process middle layers with KV cache
+    with torch.no_grad():
+        for idx in range(CLOUD_START, CLOUD_END + 1):
+            layer = model.model.layers[idx]
+            out = layer(
+                hidden,
+                attention_mask=attn_mask,
+                position_ids=position_ids,
+                past_key_values=session['cache'],
+                use_cache=True,
+                cache_position=cache_position,
+                position_embeddings=position_embeddings,
+            )
+            hidden = out[0]
+            if hidden.dim() == 2:
+                hidden = hidden.unsqueeze(0)
+
+    return hidden
+
+
+# === WebSocket Handler (primary, low-latency) ===
+
+async def ws_handler(websocket):
+    """Handle a WebSocket connection for one generation session.
+
+    Protocol:
+      1. Server sends text JSON: {"session_id": "..."}
+      2. Client sends binary frames: [4B header_len][JSON header][tensor bytes]
+         Header: {"hidden_shape", "pe_shape", "is_prompt", "crop_to"}
+         Tensor bytes: hidden_bytes + cos_bytes + sin_bytes
+      3. Server responds binary: [4B header_len][JSON header][tensor bytes]
+         Header: {"hidden_shape", "process_time_ms", "cached_seq_len"}
+      4. Client sends text JSON: {"type": "end"} to close
+    """
+    cleanup_old_sessions()
+    session_id = str(uuid.uuid4())
+    sessions[session_id] = {
+        'cache': None,
+        'last_access': time.time(),
+        'seq_len': 0
+    }
+
+    # Send session ID
+    await websocket.send(json.dumps({"session_id": session_id}))
+    print(f"[WS] New session {session_id[:8]}...")
+
+    try:
+        async for message in websocket:
+            # Text message = control command
+            if isinstance(message, str):
+                data = json.loads(message)
+                if data.get('type') == 'end':
+                    break
+                continue
+
+            # Binary message = process request
+            start = time.time()
+
+            session = sessions[session_id]
+            session['last_access'] = time.time()
+
+            # Unpack: [4B header_len][JSON header][tensor data]
+            header_len = struct.unpack('>I', message[:4])[0]
+            header = json.loads(message[4:4 + header_len])
+            tensor_data = message[4 + header_len:]
+
+            hs_shape = header['hidden_shape']
+            pe_shape = header['pe_shape']
+            is_prompt = header.get('is_prompt', True)
+            crop_to = header.get('crop_to')
+            relocate = header.get('relocate')
+            has_mask = header.get('has_mask', False)
+            mask_shape = header.get('mask_shape')
+
+            # Reconstruct hidden states
+            hs_size = 1
+            for d in hs_shape:
+                hs_size *= d
+            hs_bytes = hs_size * 2  # float16
+
+            hidden = torch.frombuffer(
+                bytearray(tensor_data[:hs_bytes]), dtype=torch.float16
+            ).reshape(hs_shape).clone().cuda()
+            if hidden.dim() == 2:
+                hidden = hidden.unsqueeze(0)
+
+            # Reconstruct position embeddings
+            pe_size = 1
+            for d in pe_shape:
+                pe_size *= d
+            pe_byte_count = pe_size * 2
+
+            pe_end = hs_bytes + pe_byte_count * 2  # cos + sin
+            cos = torch.frombuffer(
+                bytearray(tensor_data[hs_bytes:hs_bytes + pe_byte_count]),
+                dtype=torch.float16
+            ).reshape(pe_shape).clone().cuda()
+            sin = torch.frombuffer(
+                bytearray(tensor_data[hs_bytes + pe_byte_count:hs_bytes + pe_byte_count * 2]),
+                dtype=torch.float16
+            ).reshape(pe_shape).clone().cuda()
+            position_embeddings = (cos, sin)
+
+            # Reconstruct custom attention mask if provided
+            custom_mask = None
+            if has_mask and mask_shape:
+                mask_data = tensor_data[pe_end:]
+                custom_mask = torch.frombuffer(
+                    bytearray(mask_data), dtype=torch.float16
+                ).reshape(mask_shape).clone().cuda()
+
+            seq_len = hidden.shape[1]
+
+            # Process through layers
+            hidden = process_tensors(
+                session, hidden, position_embeddings, seq_len, is_prompt,
+                crop_to, relocate=relocate, custom_mask=custom_mask
+            )
+
+            # Pack response: [4B header_len][JSON header][tensor bytes]
+            out_np = hidden.cpu().numpy()
+            out_bytes = out_np.tobytes()
+
+            resp_header = json.dumps({
+                "hidden_shape": list(out_np.shape),
+                "process_time_ms": round((time.time() - start) * 1000, 2),
+                "cached_seq_len": session['seq_len']
+            }).encode()
+
+            resp = struct.pack('>I', len(resp_header)) + resp_header + out_bytes
+            await websocket.send(resp)
+
+    except websockets.exceptions.ConnectionClosed:
+        print(f"[WS] Connection closed for session {session_id[:8]}")
+    except Exception as e:
+        print(f"[WS] Error in session {session_id[:8]}: {e}")
+        traceback.print_exc()
+    finally:
+        if session_id in sessions:
+            del sessions[session_id]
+        print(f"[WS] Session {session_id[:8]} ended")
+
+
+async def start_ws_server():
+    async with websockets.serve(
+        ws_handler, "0.0.0.0", 5001,
+        max_size=20 * 1024 * 1024,  # 20MB max message
+        ping_interval=30,
+        ping_timeout=60,
+    ):
+        print("WebSocket server running on port 5001")
+        await asyncio.Future()  # run forever
+
+
+# === HTTP/Flask Handlers (health checks, backward compat) ===
+
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({
@@ -53,17 +265,19 @@ def health():
         "memory_used_gb": round(torch.cuda.memory_allocated() / 1e9, 2),
         "layers": f"{CLOUD_START}-{CLOUD_END}",
         "active_sessions": len(sessions),
-        "kv_cache": True
+        "kv_cache": True,
+        "serialization": "websocket+binary",
+        "jacobi_support": True
     })
 
 
 @app.route('/new_session', methods=['POST'])
 def new_session():
-    """Create a new session with fresh KV cache."""
+    """Create a new session with fresh KV cache (HTTP fallback)."""
     cleanup_old_sessions()
     session_id = str(uuid.uuid4())
     sessions[session_id] = {
-        'cache': None,  # Will be created on first process
+        'cache': None,
         'last_access': time.time(),
         'seq_len': 0
     }
@@ -72,14 +286,15 @@ def new_session():
 
 @app.route('/process', methods=['POST'])
 def process():
+    """Process hidden states through cloud layers (HTTP fallback)."""
     try:
         start = time.time()
         data = request.json
 
         session_id = data.get('session_id')
         is_prompt = data.get('is_prompt', True)
+        crop_to = data.get('crop_to')
 
-        # Validate session
         if session_id not in sessions:
             return jsonify({"error": "Invalid session_id. Call /new_session first."}), 400
 
@@ -87,81 +302,52 @@ def process():
         session['last_access'] = time.time()
 
         # Decode hidden states
-        hidden = torch.load(
-            io.BytesIO(base64.b64decode(data['hidden_states'])),
-            weights_only=True
-        ).cuda().half()
-
-        # Ensure batch dimension
+        hs_shape = data['hidden_shape']
+        hidden = torch.frombuffer(
+            base64.b64decode(data['hidden_states']),
+            dtype=torch.float16
+        ).reshape(hs_shape).clone().cuda()
         if hidden.dim() == 2:
             hidden = hidden.unsqueeze(0)
 
         # Decode position embeddings
-        cos, sin = torch.load(
-            io.BytesIO(base64.b64decode(data['position_embeddings'])),
-            weights_only=True
-        )
-        position_embeddings = (cos.cuda().half(), sin.cuda().half())
+        pe_shape = data['pe_shape']
+        pe_raw = base64.b64decode(data['position_embeddings'])
+        pe_size = 1
+        for d in pe_shape:
+            pe_size *= d
+        pe_bytes = pe_size * 2
+        cos = torch.frombuffer(
+            bytearray(pe_raw[:pe_bytes]), dtype=torch.float16
+        ).reshape(pe_shape).clone().cuda()
+        sin = torch.frombuffer(
+            bytearray(pe_raw[pe_bytes:]), dtype=torch.float16
+        ).reshape(pe_shape).clone().cuda()
+        position_embeddings = (cos, sin)
 
         seq_len = hidden.shape[1]
 
-        if is_prompt:
-            # First request: process full prompt, create cache
-            session['cache'] = DynamicCache()
-            cache_position = torch.arange(seq_len, device='cuda')
-            session['seq_len'] = seq_len
-        else:
-            # Subsequent: process only new token
-            cache_position = torch.tensor([session['seq_len']], device='cuda')
-            session['seq_len'] += 1
+        hidden = process_tensors(
+            session, hidden, position_embeddings, seq_len, is_prompt, crop_to
+        )
 
-        position_ids = cache_position.unsqueeze(0)
-
-        # Process middle layers with KV cache
-        with torch.no_grad():
-            for idx in range(CLOUD_START, CLOUD_END + 1):
-                layer = model.model.layers[idx]
-
-                # Get layer-specific cache
-                layer_idx = idx - CLOUD_START  # Relative index for our subset
-
-                out = layer(
-                    hidden,
-                    position_ids=position_ids,
-                    past_key_values=session['cache'],
-                    use_cache=True,
-                    cache_position=cache_position,
-                    position_embeddings=position_embeddings,
-                )
-                hidden = out[0]
-
-                # Ensure batch dimension preserved
-                if hidden.dim() == 2:
-                    hidden = hidden.unsqueeze(0)
-
-        # Encode output (only last position for non-prompt)
-        buffer = io.BytesIO()
-        if is_prompt:
-            torch.save(hidden.cpu(), buffer)
-        else:
-            # Only return the new token's hidden state
-            torch.save(hidden[:, -1:, :].cpu(), buffer)
+        out_tensor = hidden.cpu()
+        out_bytes = base64.b64encode(out_tensor.numpy().tobytes()).decode()
 
         return jsonify({
-            "hidden_states": base64.b64encode(buffer.getvalue()).decode(),
-            "shape": list(hidden.shape),
+            "hidden_states": out_bytes,
+            "hidden_shape": list(out_tensor.shape),
             "process_time_ms": round((time.time() - start) * 1000, 2),
             "cached_seq_len": session['seq_len']
         })
 
     except Exception as e:
-        import traceback
         return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
 
 
 @app.route('/end_session', methods=['POST'])
 def end_session():
-    """Clean up a session."""
+    """Clean up a session (HTTP fallback)."""
     data = request.json
     session_id = data.get('session_id')
     if session_id in sessions:
@@ -172,5 +358,14 @@ def end_session():
 
 if __name__ == '__main__':
     load_model()
-    print("Starting KV-cache server on port 5000...")
+
+    # Start WebSocket server in background thread
+    def run_ws():
+        asyncio.run(start_ws_server())
+
+    ws_thread = threading.Thread(target=run_ws, daemon=True)
+    ws_thread.start()
+
+    # Start Flask HTTP server (main thread)
+    print("Starting HTTP health server on port 5000...")
     app.run(host='0.0.0.0', port=5000, threaded=True)
