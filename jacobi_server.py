@@ -27,7 +27,7 @@ from websockets.sync.client import connect as ws_connect
 import argparse
 
 # === Configuration ===
-MODEL_PATH = "/home/mike/D/models/mistral-7b-instruct"
+MODEL_PATH = "models/mistral-7b-instruct"
 CLOUD_URL = None  # Set to "http://<cloud-ip>:5000" when A100 is available
 DEVICE = "cuda"
 BLOCK_SIZE = 16

@@ -38,3 +38,10 @@ server.log
 # Temporary files
 *.tmp
 *.bak
+
+# Claude Code settings
+.claude/
+
+# Personal deployment scripts
+deploy_to_3090.sh
+setup_cloud_server.sh

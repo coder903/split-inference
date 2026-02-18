@@ -12,8 +12,8 @@ import io
 import base64
 import time
 
-CLOUD_URL = "http://38.128.232.211:5000"
-MODEL_PATH = "/Users/mike/coding/python_3/my_projects/split-inference/models/mistral-7b-instruct"
+CLOUD_URL = "http://CLOUD_IP:5000"
+MODEL_PATH = "models/mistral-7b-instruct"
 SPLIT_AFTER = 1   # Local: layers 0-1
 RESUME_AT = 30    # Local: layers 30-31
 
@@ -191,7 +191,7 @@ def main():
     print("=" * 60)
 
     if not check_cloud():
-        print("\nCloud server must be running on 185.216.21.60:5000")
+        print("\nCloud server must be running. Set CLOUD_URL to your cloud server address.")
         return
 
     model, tokenizer = load_model()

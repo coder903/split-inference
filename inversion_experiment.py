@@ -28,11 +28,11 @@ import time
 import os
 import numpy as np
 
-MODEL_PATH = "/home/mike/D/models/mistral-7b-instruct"
+MODEL_PATH = "models/mistral-7b-instruct"
 DEVICE = "cuda"
 HIDDEN_DIM = 4096
 SPLIT_AFTER_LAYER = 1  # Collect activations after layer 1 (input to layer 2)
-DATA_DIR = "/home/mike/D/coding/python_3/my_projects/split-inference-3090/experiment_data"
+DATA_DIR = "experiment_data"
 
 # Diverse text samples for collecting activation-token pairs
 TEXT_SAMPLES = [

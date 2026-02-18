@@ -23,7 +23,7 @@ import os
 # Add parent path for jacobi_server imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-MODEL_PATH = "/home/mike/D/models/mistral-7b-instruct"
+MODEL_PATH = "models/mistral-7b-instruct"
 DEVICE = "cuda"
 MAX_NEW_TOKENS = 200
 
@@ -122,7 +122,7 @@ def main():
     parser.add_argument("--max-tokens", type=int, default=MAX_NEW_TOKENS)
     parser.add_argument("--split-after", type=int, default=1, help="Last local layer before cloud")
     parser.add_argument("--resume-at", type=int, default=None, help="First local layer after cloud")
-    parser.add_argument("--output", default="/home/mike/D/coding/python_3/my_projects/split-inference-3090/experiment_data/lookahead_ablation.json")
+    parser.add_argument("--output", default="experiment_data/lookahead_ablation.json")
     args = parser.parse_args()
 
     MAX_NEW_TOKENS = args.max_tokens

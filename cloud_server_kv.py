@@ -367,7 +367,7 @@ def end_session():
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='Split Inference Cloud Server')
-    parser.add_argument('--model', default="/home/ubuntu/models/mistral-7b-instruct",
+    parser.add_argument('--model', default="models/mistral-7b-instruct",
                         help='Path to model')
     parser.add_argument('--cloud-start', type=int, default=None,
                         help='First cloud layer (default: 2)')

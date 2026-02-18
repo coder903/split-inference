@@ -10,7 +10,7 @@ import io
 import base64
 import time
 
-CLOUD_URL = "http://185.216.21.60:5000"
+CLOUD_URL = "http://CLOUD_IP:5000"
 
 SPLIT_AFTER = 1   # Local: layers 0-1
 RESUME_AT = 30    # Local: layers 30-31
@@ -140,7 +140,7 @@ if __name__ == "__main__":
     if not check_cloud():
         exit(1)
 
-    MODEL_PATH = "/Users/mike/coding/python_3/my_projects/split-inference/models/mistral-7b-instruct"
+    MODEL_PATH = "models/mistral-7b-instruct"
     model = SplitInferenceModel(MODEL_PATH)
     response = model.generate_split("What is 2 + 2?", max_new_tokens=20)
     print(f"\n{'='*50}\nResponse: {response}")

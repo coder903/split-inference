@@ -21,7 +21,7 @@ def load_model():
     global model
     print("Loading Mistral 7B...")
     model = AutoModelForCausalLM.from_pretrained(
-        "/home/ubuntu/models/mistral-7b-instruct",
+        "models/mistral-7b-instruct",
         torch_dtype=torch.float16,
         device_map="cuda"
     )

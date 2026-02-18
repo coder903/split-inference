@@ -11,7 +11,7 @@ import json
 import sys
 
 # RTX 3090 server on local network
-SERVER_URL = "http://192.168.1.32:5001"
+SERVER_URL = "http://YOUR_LOCAL_GPU_IP:5001"
 
 
 def check_server():
@@ -88,11 +88,8 @@ def main():
 
     ok, streaming = check_server()
     if not ok:
-        print("\nMake sure the 3090 server is running:")
-        print("  ssh mike@192.168.1.32")
-        print("  cd /home/mike/D/coding/python_3/my_projects/split-inference-3090")
-        print("  source venv/bin/activate")
-        print("  python local_server_streaming.py")
+        print("\nMake sure the local GPU server is running:")
+        print("  python jacobi_server.py --model /path/to/model --cloud ws://CLOUD_IP:5001 --mode lookahead")
         return
 
     print("\nType your prompts below. 'quit' to exit.\n")
