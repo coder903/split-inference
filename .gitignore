@@ -45,3 +45,8 @@ server.log
 # Personal deployment scripts
 deploy_to_3090.sh
 setup_cloud_server.sh
+
+# LaTeX build outputs (paper source is paper.md, read on arXiv)
+paper.tex
+paper.pdf
+paper.zip
